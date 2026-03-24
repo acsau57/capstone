@@ -591,23 +591,31 @@ def run(args, dataset, save_dir=None):
     # -----------------------------
     # Save artifacts
     # -----------------------------
+
     np.save(os.path.join(save_dir, "train_predictions.npy"), train_pred)
     np.save(os.path.join(save_dir, "train_actuals.npy"), y_train)
-
+    
     np.save(os.path.join(save_dir, "val_predictions.npy"), val_pred)
     np.save(os.path.join(save_dir, "val_actuals.npy"), y_val)
-
+    
     np.save(os.path.join(save_dir, "test_predictions.npy"), test_pred)
     np.save(os.path.join(save_dir, "test_actuals.npy"), y_test)
-
+    
     np.save(os.path.join(save_dir, "train_losses.npy"), train_losses)
     np.save(os.path.join(save_dir, "val_losses.npy"), val_losses)
-
+    
     booster.save_model(os.path.join(save_dir, "best_model.json"))
-
+    
+    args_dict = args.__dict__.copy()
+    args_dict["return_df"] = True
+    dataset_df = load_dataset(Arguments(**args_dict))
+    
+    with open(os.path.join(save_dir, "feature_names.json"), "w") as f:
+        json.dump(list(dataset_df["df"].columns), f, indent=4)
+    
     with open(os.path.join(save_dir, "best_params.json"), "w") as f:
         json.dump(best_params, f, indent=4)
-
+    
     with open(metrics_path, "w") as f:
         json.dump(metrics, f, indent=4)
 
