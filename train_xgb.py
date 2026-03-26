@@ -2,9 +2,8 @@ import os
 import json
 import numpy as np
 import pandas as pd
-from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
+from sklearn.model_selection import RandomizedSearchCV, TimeSeriesSplit
 from scipy.stats import uniform, randint
-from sklearn.model_selection import KFold
 
 import data as dt  # re-use your existing feature engineering + split_data
 
@@ -22,7 +21,7 @@ class Arguments:
 
 # ---- Data loading: COPIED from your train.py (unchanged) ----
 def load_dataset(args):
-    """Load and prepare all datasets"""
+    """Load and prepare all datasets for leakage-safe forecasting."""
     
     base_dir = os.path.dirname(os.path.abspath(__file__))
     data_dir = os.path.join(base_dir, "Data")
@@ -51,13 +50,19 @@ def load_dataset(args):
 
     df = btr_data.join(macro_data, how="inner").join(dummy, how="inner")
 
-    feature_cols = args.features if hasattr(args, 'features') else ['BIR', 'BOC', 'Other Offices',"Non-tax Revenues", "Expenditures", 'TotalTrade_PHPMN', 'NominalGDP_disagg', 'Pop_disagg']
-    label_cols = args.labels if hasattr(args, 'labels') else ['BIR', 'BOC', 'Other Offices',"Non-tax Revenues", "Expenditures"]
-    dummy_vars = args.dummy_vars if hasattr(args, 'dummy_vars') else ['COVID-19','TRAIN','CREATE','FIST','BIR_COMM']
+    feature_cols = getattr(
+        args, 'features',
+        ['BIR', 'BOC', 'Other Offices', 'Non-tax Revenues', 'Expenditures',
+         'TotalTrade_PHPMN', 'NominalGDP_disagg', 'Pop_disagg']
+    )
+    label_cols = getattr(
+        args, 'labels',
+        ['BIR', 'BOC', 'Other Offices', 'Non-tax Revenues', 'Expenditures']
+    )
+    dummy_vars = getattr(args, 'dummy_vars', ['COVID-19', 'TRAIN', 'CREATE', 'FIST', 'BIR_COMM'])
 
     use_lags = getattr(args, 'use_lags', True)
 
-    # ── Log transform ──
     log_transform = getattr(args, 'log_transform', False)
     skip_log_cols = getattr(args, 'skip_log_cols', ['Inflation', 'USDPHP'])
     
@@ -66,52 +71,83 @@ def load_dataset(args):
         for col in cols_to_log:
             if col in df.columns:
                 df[col] = np.log1p(df[col])
-    # ── End log transform ──
 
     df = dt.add_seasonal_features(df)
 
+    # Explicit target lags requested in config, e.g. lag_1, lag_3, lag_12
     if use_lags:
         df = dt.add_lag_features(df, label_cols, args.lag_periods)
 
-    feature_dfs = []
-    
-    for col in feature_cols:
-        if col in df.columns:
-            feature_dfs.append(df[[col]])
-        else:
-            print(f"Warning: Feature '{col}' not found in data")
-
-    if use_lags:
-        lag_cols = [col for col in df.columns if '_lag_' in col]
-        if lag_cols:
-            feature_dfs.append(df[lag_cols])
-
-    if dummy_vars:
-        available_dummies = [d for d in dummy_vars if d in df.columns]
-        if available_dummies:
-            feature_dfs.append(df[available_dummies])  
-            
-    seasonal_cols = ['month_sin', 'month_cos', 'quarter_sin', 'quarter_cos', 
+    seasonal_cols = ['month_sin', 'month_cos', 'quarter_sin', 'quarter_cos',
                      'is_tax_season', 'is_year_end']
-    
     use_seasonal = getattr(args, 'use_seasonal', True)
-    if use_seasonal:
-        available_seasonal = [col for col in seasonal_cols if col in df.columns]
-        if available_seasonal:
-            feature_dfs.append(df[available_seasonal])
 
-    X = pd.concat(feature_dfs, axis=1).values.copy()
-    y = df[label_cols].values.copy()
+    feature_blocks = []
+    seen_cols = set()
+
+    # 1) Raw feature columns:
+    #    - if already a lagged column name, keep as-is
+    #    - otherwise, lag once
+    for col in feature_cols:
+        if col not in df.columns:
+            print(f"Warning: Feature '{col}' not found in data")
+            continue
+
+        if "_lag_" in col:
+            new_name = col
+            block = df[[col]].copy()
+        else:
+            new_name = f"{col}_lag_1"
+            block = df[[col]].shift(1).rename(columns={col: new_name})
+
+        if new_name not in seen_cols:
+            feature_blocks.append(block)
+            seen_cols.add(new_name)
+
+    # 2) Explicit target lags from args.lag_periods:
+    #    keep them exactly as created, do not shift again
+    if use_lags:
+        explicit_lag_cols = [col for col in df.columns if '_lag_' in col]
+        for col in explicit_lag_cols:
+            if col not in seen_cols:
+                feature_blocks.append(df[[col]])
+                seen_cols.add(col)
+
+    # 3) Dummy variables:
+    #    keep contemporaneous, do NOT lag
+    if dummy_vars:
+        for col in dummy_vars:
+            if col in df.columns and col not in seen_cols:
+                feature_blocks.append(df[[col]].copy())
+                seen_cols.add(col)
+
+    # 4) Seasonal variables:
+    #    keep contemporaneous, do NOT lag
+    if use_seasonal:
+        for col in seasonal_cols:
+            if col in df.columns and col not in seen_cols:
+                feature_blocks.append(df[[col]].copy())
+                seen_cols.add(col)
+
+    features_df = pd.concat(feature_blocks, axis=1)
+
+    # Drop rows made invalid by lagging and align labels
+    valid_idx = features_df.dropna().index
+    features_df = features_df.loc[valid_idx]
+    labels_df = df.loc[valid_idx, label_cols]
+
+    X = features_df.values.copy()
+    y = labels_df.values.copy()
 
     train_data, val_data, test_data = dt.split_data(X)
     train_labels, val_labels, test_labels = dt.split_data(y)
-    
+
     cv_data = np.concatenate([train_data, val_data], axis=0)
     cv_labels = np.concatenate([train_labels, val_labels], axis=0)
+
     if getattr(args, 'return_df', False):
-        features_df = pd.concat(feature_dfs, axis=1)
-        labels_df = df[label_cols]
         return {'df': features_df, 'labels_df': labels_df}
+
     return {
         'cv_data': cv_data,
         'cv_labels': cv_labels,
@@ -119,7 +155,7 @@ def load_dataset(args):
         'test_labels': test_labels,
         'input_size': cv_data.shape[1],
         'output_size': cv_labels.shape[1],
-        'log_transform': log_transform,  
+        'log_transform': log_transform,
     }
 
 # ---- Metrics ----
@@ -205,139 +241,19 @@ def fit_predict_xgb(args: Arguments, X_train, y_train, X_val, y_val, X_test):
 
     return booster, train_pred, val_pred, test_pred, evals_result
 
-
-# def run(args: Arguments, dataset: dict, save_dir: str = None):
-#     """Train XGBoost and write GRU-identical artifacts."""
-#     label_slug = _label_slug_from_args(args)
-#     if save_dir is None:
-#         save_dir = os.path.join("results", label_slug)
-#     os.makedirs(save_dir, exist_ok=True)
-
-#     cv_data   = dataset["cv_data"]
-#     cv_labels = dataset["cv_labels"]
-#     test_data   = dataset["test_data"]
-#     test_labels = dataset["test_labels"]
-
-#     cv_y = cv_labels[:, 0] if cv_labels.ndim == 2 else cv_labels
-#     test_y = test_labels[:, 0] if test_labels.ndim == 2 else test_labels
-
-#     val_fraction = float(getattr(args, "final_val_fraction", 0.15))
-#     n = cv_data.shape[0]
-#     split = int((1.0 - val_fraction) * n)
-
-#     X_train, y_train = cv_data[:split], cv_y[:split]
-#     X_val,   y_val   = cv_data[split:], cv_y[split:]
-#     X_test,  y_test  = test_data, test_y
-
-#     booster, train_pred, val_pred, test_pred = fit_predict_xgb(args, X_train, y_train, X_val, y_val, X_test)
-
-#     np.save(os.path.join(save_dir, "train_predictions.npy"), train_pred)
-#     np.save(os.path.join(save_dir, "train_actuals.npy"), y_train)
-#     np.save(os.path.join(save_dir, "val_predictions.npy"), val_pred)
-#     np.save(os.path.join(save_dir, "val_actuals.npy"), y_val)
-#     np.save(os.path.join(save_dir, "test_predictions.npy"), test_pred)
-#     np.save(os.path.join(save_dir, "test_actuals.npy"), y_test)
-
-#     best_it = getattr(booster, "best_iteration", None)
-#     metrics = {
-#         "train_mape": mape(y_train, train_pred),
-#         "val_mape": mape(y_val, val_pred),
-#         "test_mape": mape(y_test, test_pred),
-#         "train_rmse": rmse(y_train, train_pred),
-#         "val_rmse": rmse(y_val, val_pred),
-#         "test_rmse": rmse(y_test, test_pred),
-#         "train_mae": mae(y_train, train_pred),
-#         "val_mae": mae(y_val, val_pred),
-#         "test_mae": mae(y_test, test_pred),
-#         "train_mse": mse(y_train, train_pred),
-#         "val_mse": mse(y_val, val_pred),
-#         "test_mse": mse(y_test, test_pred),
-#         "best_iteration": int(best_it) if best_it is not None else -1,
-#     }
-
-#     with open(os.path.join(save_dir, "final_metrics.json"), "w") as f:
-#         json.dump(metrics, f, indent=2)
-
-#     booster.save_model(os.path.join(save_dir, "final_model.json"))
-#     return metrics
-
-# def tune_xgb_model(X_train, y_train):
-#     """
-#     Perform hyperparameter tuning for XGBoost using GridSearchCV.
-
-#     Parameters:
-#         X_train (numpy.ndarray): Training features.
-#         y_train (numpy.ndarray): Training labels.
-
-#     Returns:
-#         best_model (xgb.XGBRegressor): The best model after tuning.
-#         best_params (dict): The best hyperparameters from GridSearchCV.
-#     """
-#     # Define the parameter grid for GridSearchCV
-#     param_grid = {
-#         'learning_rate': [0.01, 0.05, 0.1],
-#         'max_depth': [3, 6, 10],
-#         'n_estimators': [100, 200, 300],
-#         'subsample': [0.8, 1.0],
-#         'colsample_bytree': [0.8, 1.0],
-#     }
-
-#     # Define the XGBoost model
-#     model = xgb.XGBRegressor(objective="reg:squarederror")
-
-#     # Setup the grid search
-#     grid_search = GridSearchCV(estimator=model, param_grid=param_grid, cv=5, scoring='neg_mean_squared_error')
-
-#     # Fit the grid search to the data
-#     grid_search.fit(X_train, y_train)
-
-#     # Extract the best model and best hyperparameters
-#     best_model = grid_search.best_estimator_
-#     best_params = grid_search.best_params_
-
-#     # Print out the best hyperparameters
-#     print(f"Best Hyperparameters: {best_params}")
-
-#     return best_model, best_params
-
-def tune_xgb_model(X_train, y_train, n_iter=100):
+def tune_xgb_model(X_train, y_train, n_iter=100, n_splits=5):
     """
-    Perform hyperparameter tuning for XGBoost using RandomizedSearchCV.
-
-    Parameters
-    ----------
-    X_train : numpy.ndarray
-        Training features
-    y_train : numpy.ndarray
-        Training labels
-    n_iter : int
-        Number of parameter combinations to sample
-
-    Returns
-    -------
-    best_model : xgb.XGBRegressor
-        Best model found
-    best_params : dict
-        Best hyperparameters
+    Perform hyperparameter tuning for XGBoost using RandomizedSearchCV
+    with TimeSeriesSplit to avoid temporal leakage.
     """
 
     param_dist = {
-
-        # Tree complexity
         "max_depth": randint(3, 12),
         "min_child_weight": randint(1, 10),
-
-        # Learning behavior
         "learning_rate": uniform(0.01, 0.49),
-
-        # Number of boosting rounds
         "n_estimators": randint(100, 800),
-
-        # Subsampling
         "subsample": uniform(0.6, 0.4),
         "colsample_bytree": uniform(0.6, 0.4),
-
-        # Regularization
         "gamma": uniform(0, 5),
         "reg_alpha": uniform(0, 1),
         "reg_lambda": uniform(0, 5),
@@ -349,11 +265,13 @@ def tune_xgb_model(X_train, y_train, n_iter=100):
         random_state=42
     )
 
+    tscv = TimeSeriesSplit(n_splits=n_splits)
+
     random_search = RandomizedSearchCV(
         estimator=model,
         param_distributions=param_dist,
         n_iter=n_iter,
-        cv=5,
+        cv=tscv,
         scoring="neg_mean_squared_error",
         verbose=1,
         n_jobs=-1,
@@ -368,117 +286,6 @@ def tune_xgb_model(X_train, y_train, n_iter=100):
     print("Best Hyperparameters:", best_params)
 
     return best_model, best_params
-
-# def run(args, dataset, save_dir=None):
-#     """
-#     Train XGBoost model with hyperparameter tuning and saves the model and metrics only if performance improves.
-#     """
-#     if save_dir is None:
-#         save_dir = os.path.join("results", "xgb_model")
-#     os.makedirs(save_dir, exist_ok=True)
-
-#     # Load dataset
-#     cv_data = dataset["cv_data"]
-#     cv_labels = dataset["cv_labels"]
-#     test_data = dataset["test_data"]
-#     test_labels = dataset["test_labels"]
-
-#     # Hyperparameter tuning (included in the same function)
-#     best_model, best_params = tune_xgb_model(cv_data, cv_labels)
-
-#     # Load existing results if available to compare
-#     existing_metrics = None
-#     if os.path.exists(os.path.join(save_dir, "metrics.json")):
-#         with open(os.path.join(save_dir, "metrics.json"), 'r') as f:
-#             existing_metrics = json.load(f)
-
-#     # Cross-validation loop
-#     kf = KFold(n_splits=5, shuffle=True, random_state=42)  # You can adjust n_splits
-#     fold_train_metrics = []
-#     fold_val_metrics = []
-
-#     for train_index, val_index in kf.split(cv_data):
-#         X_train, X_val = cv_data[train_index], cv_data[val_index]
-#         y_train, y_val = cv_labels[train_index], cv_labels[val_index]
-
-#         # Train and evaluate the model for each fold
-#         booster, train_pred, val_pred, _, evals_result = fit_predict_xgb(args, X_train, y_train, X_val, y_val, test_data)
-
-#         metric_name = args.eval_metric if hasattr(args, "eval_metric") else "mae"
-
-#         train_losses = evals_result["train"][metric_name]
-#         val_losses = evals_result["val"][metric_name]
-        
-#         # Calculate metrics for the fold
-#         fold_train_metrics.append({
-#             "mse": mse(y_train, train_pred),
-#             "rmse": rmse(y_train, train_pred),
-#             "mae": mae(y_train, train_pred),
-#             "mape": mape(y_train, train_pred),
-#         })
-
-#         fold_val_metrics.append({
-#             "mse": mse(y_val, val_pred),
-#             "rmse": rmse(y_val, val_pred),
-#             "mae": mae(y_val, val_pred),
-#             "mape": mape(y_val, val_pred),
-#         })
-
-#     # Calculate average metrics for training and validation
-#     avg_train_metrics = {key: np.mean([fold[key] for fold in fold_train_metrics]) for key in fold_train_metrics[0].keys()}
-#     avg_val_metrics = {key: np.mean([fold[key] for fold in fold_val_metrics]) for key in fold_val_metrics[0].keys()}
-
-#     # Final model performance on the test set
-#     train_pred = best_model.predict(cv_data)
-#     test_pred = best_model.predict(test_data)
-
-#     # Calculate final test metrics
-#     test_metrics = {
-#         "mse": mse(test_labels, test_pred),
-#         "rmse": rmse(test_labels, test_pred),
-#         "mae": mae(test_labels, test_pred),
-#         "mape": mape(test_labels, test_pred),
-#     }
-
-#     # Store results
-#     np.save(os.path.join(save_dir, "train_predictions.npy"), train_pred)
-#     np.save(os.path.join(save_dir, "val_predictions.npy"), val_pred)
-#     np.save(os.path.join(save_dir, "test_predictions.npy"), test_pred)
-
-#     # Save training and validation loss
-#     np.save(os.path.join(save_dir, f"train_losses_fold_{i}.npy"), train_losses)
-#     np.save(os.path.join(save_dir, f"val_losses_fold_{i}.npy"), val_losses)
-
-#     # Save the actuals (important for evaluating performance)
-#     np.save(os.path.join(save_dir, "train_actuals.npy"), cv_labels)  # Save the actuals for train
-#     np.save(os.path.join(save_dir, "val_actuals.npy"), cv_labels[val_index])  # Save the actuals for validation
-#     np.save(os.path.join(save_dir, "test_actuals.npy"), test_labels)  # Save the actuals for test
-
-#     with open(os.path.join(save_dir, "metrics.json"), 'w') as f:
-#         json.dump({
-#             "avg_train_metrics": avg_train_metrics,
-#             "avg_val_metrics": avg_val_metrics,
-#             "test_metrics": test_metrics,
-#         }, f, indent=4)
-
-#     # Save the best model and hyperparameters if performance improved
-#     if existing_metrics:
-#         previous_best_rmse = existing_metrics["test_metrics"]["rmse"]
-#         if test_metrics["rmse"] >= previous_best_rmse:
-#             print(f"Performance did not improve (RMSE: {test_metrics['rmse']:.4f} vs {previous_best_rmse:.4f}). Keeping previous model.")
-#             return best_model, test_metrics  # Don't overwrite the best model if performance did not improve
-
-#     print(f"Performance improved! Saving new best model and metrics.")
-#     best_model.save_model(os.path.join(save_dir, "best_model.json"))
-#     with open(os.path.join(save_dir, "best_params.json"), 'w') as f:
-#         json.dump(best_params, f, indent=4)
-
-#     # Return the best model and the final test metrics
-#     return best_model, {
-#         "avg_train_metrics": avg_train_metrics,
-#         "avg_val_metrics": avg_val_metrics,
-#         "test_metrics": test_metrics,
-#     }
 
 def run(args, dataset, save_dir=None):
     """

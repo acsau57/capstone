@@ -243,47 +243,259 @@ def explain_xgb_model(label, start_date, feature_configs, xgb_params,
     return result
 
 
-def plot_xgb_shap_summary(shap_values, X_test, title=None, save_path=None):
-    plt.figure(figsize=(10, 8))
-    shap.summary_plot(shap_values, X_test, show=False)
+def shorten_feature_name(name, max_len=18):
+    if len(name) <= max_len:
+        return name
+    return name[:max_len - 3] + "..."
+
+
+def shorten_feature_names(columns, max_len=18):
+    return [shorten_feature_name(col, max_len=max_len) for col in columns]
+
+
+def plot_xgb_shap_summary(
+    shap_values,
+    X_test,
+    title=None,
+    save_path=None,
+    max_display=8,
+    figsize=(10, 6),
+    shorten_names=False,
+    name_max_len=16
+):
+    X_plot = X_test.copy()
+
+    if shorten_names:
+        X_plot.columns = shorten_feature_names(X_plot.columns, max_len=name_max_len)
+
+    plt.figure(figsize=figsize)
+    shap.summary_plot(
+        shap_values,
+        X_plot,
+        max_display=max_display,
+        show=False
+    )
+
     if title:
-        plt.title(title)
+        plt.title(title, fontsize=12)
+
     plt.tight_layout()
     if save_path:
         plt.savefig(save_path, dpi=300, bbox_inches="tight")
     plt.show()
+    plt.close()
 
 
-def plot_xgb_shap_bar(shap_values, X_test, title=None, save_path=None):
-    plt.figure(figsize=(10, 6))
-    shap.summary_plot(shap_values, X_test, plot_type="bar", show=False)
+def plot_xgb_shap_bar(
+    shap_values,
+    X_test,
+    title=None,
+    save_path=None,
+    max_display=8,
+    figsize=(10, 5.5),
+    shorten_names=False,
+    name_max_len=16
+):
+    X_plot = X_test.copy()
+
+    if shorten_names:
+        X_plot.columns = shorten_feature_names(X_plot.columns, max_len=name_max_len)
+
+    plt.figure(figsize=figsize)
+    shap.summary_plot(
+        shap_values,
+        X_plot,
+        plot_type="bar",
+        max_display=max_display,
+        show=False
+    )
+
     if title:
-        plt.title(title)
+        plt.title(title, fontsize=12)
+
     plt.tight_layout()
     if save_path:
         plt.savefig(save_path, dpi=300, bbox_inches="tight")
     plt.show()
+    plt.close()
 
 
-def plot_xgb_shap_waterfall(explainer, shap_values, X_test, sample_idx=0,
-                            title=None, save_path=None, max_display=15):
+def plot_xgb_shap_waterfall(
+    explainer,
+    shap_values,
+    X_test,
+    sample_idx=0,
+    title=None,
+    save_path=None,
+    max_display=8,
+    figsize=(11, 7),
+    shorten_names=False,
+    name_max_len=18,
+    show_feature_values=False
+):
+    feature_names = X_test.columns.tolist()
+
+    if shorten_names:
+        feature_names = shorten_feature_names(feature_names, max_len=name_max_len)
+
     explanation = shap.Explanation(
         values=shap_values[sample_idx],
         base_values=explainer.expected_value,
-        data=X_test.iloc[sample_idx],
-        feature_names=X_test.columns.tolist()
+        data=X_test.iloc[sample_idx].values if show_feature_values else None,
+        feature_names=feature_names
     )
 
-    plt.figure(figsize=(10, 8))
-    shap.plots.waterfall(explanation, max_display=max_display, show=False)
+    plt.figure(figsize=figsize)
+    shap.plots.waterfall(
+        explanation,
+        max_display=max_display,
+        show=False
+    )
+
     if title:
-        plt.title(title)
+        plt.title(title, fontsize=13)
+
     plt.tight_layout()
     if save_path:
         plt.savefig(save_path, dpi=300, bbox_inches="tight")
     plt.show()
+    plt.close()
 
+def plot_xgb_shap_combined(
+    explainer,
+    shap_values,
+    X_test,
+    sample_idx=0,
+    title_prefix=None,
+    save_path=None,
+    summary_max_display=8,
+    bar_max_display=8,
+    waterfall_max_display=8,
+    shorten_names=False,
+    name_max_len=16,
+    show_feature_values=False,
+    panel_dpi=160,
+    display_figsize=(24, 7)
+):
+    """
+    Create summary, bar, and waterfall SHAP plots as separate images,
+    then stitch them horizontally into one combined figure.
 
+    Parameters
+    ----------
+    explainer : shap explainer
+    shap_values : np.ndarray
+    X_test : pd.DataFrame
+    sample_idx : int
+    title_prefix : str
+    save_path : str or None
+    shorten_names : bool
+    show_feature_values : bool
+        If False, waterfall omits raw feature values from labels.
+    """
+    import os
+    import tempfile
+    from PIL import Image
+
+    feature_names = X_test.columns.tolist()
+    X_plot = X_test.copy()
+
+    if shorten_names:
+        feature_names = shorten_feature_names(feature_names, max_len=name_max_len)
+        X_plot.columns = feature_names
+
+    tmpdir = tempfile.mkdtemp()
+
+    # -------------------------
+    # Summary plot
+    # -------------------------
+    summary_path = os.path.join(tmpdir, "summary.png")
+    plt.figure(figsize=(8, 6))
+    shap.summary_plot(
+        shap_values,
+        X_plot,
+        max_display=summary_max_display,
+        show=False
+    )
+    plt.title(
+        f"{title_prefix} — Summary" if title_prefix else "SHAP Summary",
+        fontsize=12
+    )
+    plt.tight_layout()
+    plt.savefig(summary_path, dpi=panel_dpi, bbox_inches="tight")
+    plt.close()
+
+    # -------------------------
+    # Bar plot
+    # -------------------------
+    bar_path = os.path.join(tmpdir, "bar.png")
+    plt.figure(figsize=(8, 6))
+    shap.summary_plot(
+        shap_values,
+        X_plot,
+        plot_type="bar",
+        max_display=bar_max_display,
+        show=False
+    )
+    plt.title(
+        f"{title_prefix} — Bar" if title_prefix else "SHAP Bar",
+        fontsize=12
+    )
+    plt.tight_layout()
+    plt.savefig(bar_path, dpi=panel_dpi, bbox_inches="tight")
+    plt.close()
+
+    # -------------------------
+    # Waterfall plot
+    # -------------------------
+    waterfall_path = os.path.join(tmpdir, "waterfall.png")
+
+    explanation = shap.Explanation(
+        values=shap_values[sample_idx],
+        base_values=explainer.expected_value,
+        data=X_test.iloc[sample_idx].values if show_feature_values else None,
+        feature_names=feature_names
+    )
+
+    plt.figure(figsize=(8, 6))
+    shap.plots.waterfall(
+        explanation,
+        max_display=waterfall_max_display,
+        show=False
+    )
+    plt.title(
+        f"{title_prefix} — Waterfall (sample {sample_idx})" if title_prefix else f"SHAP Waterfall (sample {sample_idx})",
+        fontsize=12
+    )
+    plt.tight_layout()
+    plt.savefig(waterfall_path, dpi=panel_dpi, bbox_inches="tight")
+    plt.close()
+
+    # -------------------------
+    # Stitch horizontally
+    # -------------------------
+    imgs = [Image.open(summary_path), Image.open(bar_path), Image.open(waterfall_path)]
+
+    total_width = sum(img.width for img in imgs)
+    max_height = max(img.height for img in imgs)
+
+    combined = Image.new("RGB", (total_width, max_height), "white")
+
+    x_offset = 0
+    for img in imgs:
+        combined.paste(img, (x_offset, 0))
+        x_offset += img.width
+
+    if save_path:
+        combined.save(save_path)
+
+    plt.figure(figsize=display_figsize)
+    plt.imshow(combined)
+    plt.axis("off")
+    plt.tight_layout()
+    plt.show()
+    plt.close()
+    
 def run_xgb_shap_analysis(label, start_date, feature_configs, xgb_params,
                           save_root="results_featselect", sample_idx=0,
                           save_plots=True, background_size=100, save_csv=True):
@@ -304,26 +516,58 @@ def run_xgb_shap_analysis(label, start_date, feature_configs, xgb_params,
     title_suffix = f"{label} - {start_date}"
 
     plot_xgb_shap_summary(
-        shap_values,
-        X_test,
-        title=f"SHAP Summary - {title_suffix}",
-        save_path=os.path.join(save_dir, "shap_summary.png") if save_plots else None
+    shap_values,
+    X_test,
+    title=f"SHAP Summary - {title_suffix}",
+    save_path=os.path.join(save_dir, "shap_summary.png") if save_plots else None,
+    max_display=8,
+    figsize=(10, 6),
+    shorten_names=True,
+    name_max_len=30
     )
-
+    
     plot_xgb_shap_bar(
         shap_values,
         X_test,
         title=f"SHAP Bar - {title_suffix}",
-        save_path=os.path.join(save_dir, "shap_bar.png") if save_plots else None
+        save_path=os.path.join(save_dir, "shap_bar.png") if save_plots else None,
+        max_display=8,
+        figsize=(10, 5.5),
+        shorten_names=True,
+        name_max_len=30
     )
-
+    
     plot_xgb_shap_waterfall(
         explainer,
         shap_values,
         X_test,
         sample_idx=sample_idx,
         title=f"SHAP Waterfall - {title_suffix} - sample {sample_idx}",
-        save_path=os.path.join(save_dir, f"shap_waterfall_{sample_idx}.png") if save_plots else None
+        save_path=os.path.join(save_dir, f"shap_waterfall_{sample_idx}.png") if save_plots else None,
+        max_display=8,
+        figsize=(10, 6.5),
+        shorten_names=True,
+        name_max_len=30,
+        show_feature_values=False
+    )
+
+    combined_path = os.path.join(save_dir, "shap_combined.png") if save_plots else None
+
+    plot_xgb_shap_combined(
+        explainer=explainer,
+        shap_values=shap_values,
+        X_test=X_test,
+        sample_idx=sample_idx,
+        title_prefix=title_suffix,
+        save_path=combined_path,
+        summary_max_display=8,
+        bar_max_display=8,
+        waterfall_max_display=8,
+        shorten_names=True,
+        name_max_len=30,
+        show_feature_values=False,
+        panel_dpi=160,
+        display_figsize=(24, 7)
     )
 
     if save_csv:
