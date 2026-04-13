@@ -34,10 +34,7 @@ def add_lag_features(df, target_cols, lags=[1, 3, 12]):
         # Simple lags: 1, 3, 12
         for lag in lags:
             df[f'{col}_lag_{lag}'] = df[col].shift(lag)
-    
-    # Drop rows with NaN from lag_12 (first 12 rows)
-    df = df.dropna()
-    
+
     return df
     
 def add_seasonal_features(df):

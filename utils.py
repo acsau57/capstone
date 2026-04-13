@@ -242,43 +242,24 @@ def explain_xgb_model(label, start_date, feature_configs, xgb_params,
 
     return result
 
-
-def shorten_feature_name(name, max_len=18):
-    if len(name) <= max_len:
-        return name
-    return name[:max_len - 3] + "..."
-
-
-def shorten_feature_names(columns, max_len=18):
-    return [shorten_feature_name(col, max_len=max_len) for col in columns]
-
-
 def plot_xgb_shap_summary(
     shap_values,
     X_test,
-    title=None,
+    output_name=None,
     save_path=None,
-    max_display=8,
-    figsize=(10, 6),
-    shorten_names=False,
-    name_max_len=16
+    figsize=(10, 8),
+    max_display=None,
 ):
-    X_plot = X_test.copy()
-
-    if shorten_names:
-        X_plot.columns = shorten_feature_names(X_plot.columns, max_len=name_max_len)
+    title = f"SHAP Feature Importance - {output_name}" if output_name else "SHAP Feature Importance"
 
     plt.figure(figsize=figsize)
     shap.summary_plot(
         shap_values,
-        X_plot,
+        X_test,
         max_display=max_display,
         show=False
     )
-
-    if title:
-        plt.title(title, fontsize=12)
-
+    plt.title(title)
     plt.tight_layout()
     if save_path:
         plt.savefig(save_path, dpi=300, bbox_inches="tight")
@@ -289,30 +270,22 @@ def plot_xgb_shap_summary(
 def plot_xgb_shap_bar(
     shap_values,
     X_test,
-    title=None,
+    output_name=None,
     save_path=None,
-    max_display=8,
-    figsize=(10, 5.5),
-    shorten_names=False,
-    name_max_len=16
+    figsize=(10, 6),
+    max_display=None,
 ):
-    X_plot = X_test.copy()
-
-    if shorten_names:
-        X_plot.columns = shorten_feature_names(X_plot.columns, max_len=name_max_len)
+    title = f"SHAP Mean Importance - {output_name}" if output_name else "SHAP Mean Importance"
 
     plt.figure(figsize=figsize)
     shap.summary_plot(
         shap_values,
-        X_plot,
+        X_test,
         plot_type="bar",
         max_display=max_display,
         show=False
     )
-
-    if title:
-        plt.title(title, fontsize=12)
-
+    plt.title(title)
     plt.tight_layout()
     if save_path:
         plt.savefig(save_path, dpi=300, bbox_inches="tight")
@@ -325,24 +298,22 @@ def plot_xgb_shap_waterfall(
     shap_values,
     X_test,
     sample_idx=0,
-    title=None,
+    output_name=None,
     save_path=None,
+    figsize=(10, 8),
     max_display=8,
-    figsize=(11, 7),
-    shorten_names=False,
-    name_max_len=18,
-    show_feature_values=False
+    show_feature_values=False,
 ):
-    feature_names = X_test.columns.tolist()
-
-    if shorten_names:
-        feature_names = shorten_feature_names(feature_names, max_len=name_max_len)
-
     explanation = shap.Explanation(
         values=shap_values[sample_idx],
         base_values=explainer.expected_value,
         data=X_test.iloc[sample_idx].values if show_feature_values else None,
-        feature_names=feature_names
+        feature_names=X_test.columns.tolist(),
+    )
+
+    title = (
+        f"SHAP Waterfall - Sample {sample_idx}, {output_name}"
+        if output_name else f"SHAP Waterfall - Sample {sample_idx}"
     )
 
     plt.figure(figsize=figsize)
@@ -351,140 +322,92 @@ def plot_xgb_shap_waterfall(
         max_display=max_display,
         show=False
     )
-
-    if title:
-        plt.title(title, fontsize=13)
-
+    plt.title(title)
     plt.tight_layout()
     if save_path:
         plt.savefig(save_path, dpi=300, bbox_inches="tight")
     plt.show()
     plt.close()
 
+
 def plot_xgb_shap_combined(
     explainer,
     shap_values,
     X_test,
+    output_name=None,
     sample_idx=0,
-    title_prefix=None,
     save_path=None,
     summary_max_display=8,
     bar_max_display=8,
     waterfall_max_display=8,
-    shorten_names=False,
-    name_max_len=16,
     show_feature_values=False,
-    panel_dpi=160,
-    display_figsize=(24, 7)
+    panel_dpi=150,
+    display_figsize=(30, 8),
 ):
-    """
-    Create summary, bar, and waterfall SHAP plots as separate images,
-    then stitch them horizontally into one combined figure.
-
-    Parameters
-    ----------
-    explainer : shap explainer
-    shap_values : np.ndarray
-    X_test : pd.DataFrame
-    sample_idx : int
-    title_prefix : str
-    save_path : str or None
-    shorten_names : bool
-    show_feature_values : bool
-        If False, waterfall omits raw feature values from labels.
-    """
-    import os
     import tempfile
     from PIL import Image
 
-    feature_names = X_test.columns.tolist()
-    X_plot = X_test.copy()
+    tmp = tempfile.mkdtemp()
 
-    if shorten_names:
-        feature_names = shorten_feature_names(feature_names, max_len=name_max_len)
-        X_plot.columns = feature_names
-
-    tmpdir = tempfile.mkdtemp()
-
-    # -------------------------
-    # Summary plot
-    # -------------------------
-    summary_path = os.path.join(tmpdir, "summary.png")
-    plt.figure(figsize=(8, 6))
+    # Summary
+    plt.figure(figsize=(10, 8))
     shap.summary_plot(
         shap_values,
-        X_plot,
+        X_test,
         max_display=summary_max_display,
         show=False
     )
-    plt.title(
-        f"{title_prefix} — Summary" if title_prefix else "SHAP Summary",
-        fontsize=12
-    )
+    plt.title(f"Feature Importance — {output_name}" if output_name else "Feature Importance")
     plt.tight_layout()
-    plt.savefig(summary_path, dpi=panel_dpi, bbox_inches="tight")
+    plt.savefig(f"{tmp}/summary.png", dpi=panel_dpi, bbox_inches="tight")
     plt.close()
 
-    # -------------------------
-    # Bar plot
-    # -------------------------
-    bar_path = os.path.join(tmpdir, "bar.png")
-    plt.figure(figsize=(8, 6))
+    # Bar
+    plt.figure(figsize=(10, 8))
     shap.summary_plot(
         shap_values,
-        X_plot,
+        X_test,
         plot_type="bar",
         max_display=bar_max_display,
         show=False
     )
-    plt.title(
-        f"{title_prefix} — Bar" if title_prefix else "SHAP Bar",
-        fontsize=12
-    )
+    plt.title(f"Mean Importance — {output_name}" if output_name else "Mean Importance")
     plt.tight_layout()
-    plt.savefig(bar_path, dpi=panel_dpi, bbox_inches="tight")
+    plt.savefig(f"{tmp}/bar.png", dpi=panel_dpi, bbox_inches="tight")
     plt.close()
 
-    # -------------------------
-    # Waterfall plot
-    # -------------------------
-    waterfall_path = os.path.join(tmpdir, "waterfall.png")
-
+    # Waterfall
     explanation = shap.Explanation(
         values=shap_values[sample_idx],
         base_values=explainer.expected_value,
         data=X_test.iloc[sample_idx].values if show_feature_values else None,
-        feature_names=feature_names
+        feature_names=X_test.columns.tolist(),
     )
 
-    plt.figure(figsize=(8, 6))
+    plt.figure(figsize=(10, 8))
     shap.plots.waterfall(
         explanation,
         max_display=waterfall_max_display,
         show=False
     )
     plt.title(
-        f"{title_prefix} — Waterfall (sample {sample_idx})" if title_prefix else f"SHAP Waterfall (sample {sample_idx})",
-        fontsize=12
+        f"Waterfall — Sample {sample_idx}, {output_name}"
+        if output_name else f"Waterfall — Sample {sample_idx}"
     )
     plt.tight_layout()
-    plt.savefig(waterfall_path, dpi=panel_dpi, bbox_inches="tight")
+    plt.savefig(f"{tmp}/waterfall.png", dpi=panel_dpi, bbox_inches="tight")
     plt.close()
 
-    # -------------------------
     # Stitch horizontally
-    # -------------------------
-    imgs = [Image.open(summary_path), Image.open(bar_path), Image.open(waterfall_path)]
+    imgs = [Image.open(f"{tmp}/{n}.png") for n in ["summary", "bar", "waterfall"]]
+    total_w = sum(i.width for i in imgs)
+    max_h = max(i.height for i in imgs)
 
-    total_width = sum(img.width for img in imgs)
-    max_height = max(img.height for img in imgs)
-
-    combined = Image.new("RGB", (total_width, max_height), "white")
-
-    x_offset = 0
+    combined = Image.new("RGB", (total_w, max_h), "white")
+    x = 0
     for img in imgs:
-        combined.paste(img, (x_offset, 0))
-        x_offset += img.width
+        combined.paste(img, (x, 0))
+        x += img.width
 
     if save_path:
         combined.save(save_path)
@@ -513,61 +436,51 @@ def run_xgb_shap_analysis(label, start_date, feature_configs, xgb_params,
     X_test = result["X_test"]
     save_dir = result["save_dir"]
 
-    title_suffix = f"{label} - {start_date}"
+    output_name = f"{label} - {start_date}"
 
     plot_xgb_shap_summary(
-    shap_values,
-    X_test,
-    title=f"SHAP Summary - {title_suffix}",
-    save_path=os.path.join(save_dir, "shap_summary.png") if save_plots else None,
-    max_display=8,
-    figsize=(10, 6),
-    shorten_names=True,
-    name_max_len=30
+        shap_values,
+        X_test,
+        output_name=output_name,
+        save_path=os.path.join(save_dir, "shap_summary.png") if save_plots else None,
+        figsize=(10, 8),
+        max_display=8,
     )
-    
+
     plot_xgb_shap_bar(
         shap_values,
         X_test,
-        title=f"SHAP Bar - {title_suffix}",
+        output_name=output_name,
         save_path=os.path.join(save_dir, "shap_bar.png") if save_plots else None,
+        figsize=(10, 6),
         max_display=8,
-        figsize=(10, 5.5),
-        shorten_names=True,
-        name_max_len=30
     )
-    
+
     plot_xgb_shap_waterfall(
         explainer,
         shap_values,
         X_test,
         sample_idx=sample_idx,
-        title=f"SHAP Waterfall - {title_suffix} - sample {sample_idx}",
+        output_name=output_name,
         save_path=os.path.join(save_dir, f"shap_waterfall_{sample_idx}.png") if save_plots else None,
+        figsize=(10, 8),
         max_display=8,
-        figsize=(10, 6.5),
-        shorten_names=True,
-        name_max_len=30,
-        show_feature_values=False
+        show_feature_values=False,
     )
 
-    combined_path = os.path.join(save_dir, "shap_combined.png") if save_plots else None
-
     plot_xgb_shap_combined(
-        explainer=explainer,
-        shap_values=shap_values,
-        X_test=X_test,
+        explainer,
+        shap_values,
+        X_test,
+        output_name=output_name,
         sample_idx=sample_idx,
-        title_prefix=title_suffix,
-        save_path=combined_path,
+        save_path=os.path.join(save_dir, "shap_combined.png") if save_plots else None,
         summary_max_display=8,
         bar_max_display=8,
         waterfall_max_display=8,
-        shorten_names=True,
-        name_max_len=30,
         show_feature_values=False,
-        panel_dpi=160,
-        display_figsize=(24, 7)
+        panel_dpi=150,
+        display_figsize=(30, 8),
     )
 
     if save_csv:
@@ -598,139 +511,6 @@ def run_xgb_shap_batch(experiments, feature_configs, xgb_params,
                 sample_idx=sample_idx,
                 save_plots=save_plots,
                 background_size=background_size,
-                save_csv=save_csv,
-            )
-            results.append(result)
-        except Exception as e:
-            print(f"Failed for {label} | {start_date}: {e}")
-
-    return results
-
-
-# ============================================================
-# PERMUTATION IMPORTANCE ONLY
-# ============================================================
-
-def compute_xgb_permutation_importance(
-    booster,
-    X_test,
-    y_test,
-    metric="rmse",
-    n_repeats=5,
-    random_state=42
-):
-    """
-    Permutation importance on a fixed fitted XGBoost Booster.
-    No retraining. Only repeated prediction on shuffled copies of X_test.
-    """
-    rng = np.random.default_rng(random_state)
-
-    if isinstance(y_test, pd.DataFrame):
-        y_test = y_test.iloc[:, 0]
-    if isinstance(y_test, pd.Series):
-        y_test = y_test.values
-
-    dtest = xgb.DMatrix(X_test)
-    baseline_preds = booster.predict(dtest)
-
-    if metric == "rmse":
-        baseline_score = np.sqrt(np.mean((y_test - baseline_preds) ** 2))
-    elif metric == "mae":
-        baseline_score = np.mean(np.abs(y_test - baseline_preds))
-    else:
-        raise ValueError("metric must be 'rmse' or 'mae'")
-
-    rows = []
-
-    for col in X_test.columns:
-        repeat_scores = []
-
-        for _ in range(n_repeats):
-            X_perm = X_test.copy()
-            X_perm[col] = rng.permutation(X_perm[col].values)
-
-            dperm = xgb.DMatrix(X_perm)
-            perm_preds = booster.predict(dperm)
-
-            if metric == "rmse":
-                perm_score = np.sqrt(np.mean((y_test - perm_preds) ** 2))
-            else:
-                perm_score = np.mean(np.abs(y_test - perm_preds))
-
-            repeat_scores.append(perm_score)
-
-        mean_perm_score = float(np.mean(repeat_scores))
-        std_perm_score = float(np.std(repeat_scores))
-        importance = mean_perm_score - baseline_score
-
-        rows.append({
-            "feature": col,
-            "baseline_score": float(baseline_score),
-            "mean_permuted_score": mean_perm_score,
-            "importance": float(importance),
-            "std_across_repeats": std_perm_score
-        })
-
-    perm_importance_df = (
-        pd.DataFrame(rows)
-        .sort_values("importance", ascending=False)
-        .reset_index(drop=True)
-    )
-
-    return perm_importance_df
-
-
-def run_xgb_permutation_importance(label, start_date, feature_configs, xgb_params,
-                                   save_root="results_featselect",
-                                   metric="rmse", n_repeats=5, save_csv=True):
-    result = load_xgb_experiment(
-        label=label,
-        start_date=start_date,
-        feature_configs=feature_configs,
-        xgb_params=xgb_params,
-        save_root=save_root,
-    )
-
-    perm_importance_df = compute_xgb_permutation_importance(
-        booster=result["booster"],
-        X_test=result["X_test"],
-        y_test=result["y_test"],
-        metric=metric,
-        n_repeats=n_repeats,
-        random_state=42
-    )
-
-    result["perm_importance_df"] = perm_importance_df
-
-    if save_csv:
-        perm_importance_df.to_csv(
-            os.path.join(result["save_dir"], "permutation_importance.csv"),
-            index=False
-        )
-
-    print("\n" + "=" * 80)
-    print(f"PERMUTATION IMPORTANCE | Label: {label} | Start date: {start_date} | Metric: {metric}")
-    print("=" * 80)
-    print(perm_importance_df.head(10))
-
-    return result
-
-
-def run_xgb_permutation_batch(experiments, feature_configs, xgb_params,
-                              save_root="results_featselect",
-                              metric="rmse", n_repeats=5, save_csv=True):
-    results = []
-
-    for label, start_date in experiments:
-        try:
-            result = run_xgb_permutation_importance(
-                label=label,
-                start_date=start_date,
-                feature_configs=feature_configs,
-                xgb_params=xgb_params,
-                save_root=save_root,
-                metric=metric,
-                n_repeats=n_repeats,
                 save_csv=save_csv,
             )
             results.append(result)
